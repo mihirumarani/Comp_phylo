@@ -3,32 +3,24 @@ library(phytools)
 library(geiger)
 library(ggplot2)
 library(cowplot)
+library(RPANDA)
 
 
-#Input phylogenetic tree from Mahler et.al.(2013)
-tree<-read.tree("GA_Anolis_MCC.tre")
-
-#Input trait data
-Data<-read.csv("GA_Anolis_traits.csv")
-
-#Trait to analyze is SVL, snout to vent length
-Data1<-Data[,2]
-
-#number of tips
-n<-length(tree$tip.label)
-
-##Calculate speciation events
+#A simple analysis where a trait evolution model from Nuismer and Harmon (2015) is simulated on a pure-birth phylogenetic tree with 20 tips. All the species at a given time
+#are assumed to be in sympatry. Trait values do not influence speciation rates and the speciation rates do not alter the trait values of new species by a lot. 
+#Trait optimum for OU process is assumed to be constant. Free parameters in the model: a. Ancestral trait value, b. OU trait optimum, c. Coefficient for OU process, d. drift variance
+# e. coefficient of competition
 
 
-#total time to evolve from the common ancestor (in terms of generations~5 years)
 
-t<-10^3
+
+#total time to evolve from the common ancestor (To limit the interations in the simulation)
+time<-250
 brt<-branching.times(tree)
 
 #speciation events
-br<-floor(t*(1-(brt/max(brt))))
+br<-floor(time*(1-(brt/max(brt))))
 br<-sort(br,decreasing=FALSE)
-
 
 
 #Create a simulation for trait evolution
@@ -47,83 +39,78 @@ evol<-function(ent,br){
   delta<-ent[5]
   theta<-ent[4]
   tr<-c(ancestor)
-  for(i in 0:250){
-    
+  for(i in 0:time){
     if(i%in%br){
       l<-sum(i==br)
       tr<-c(tr,tr[length(tr)]+rnorm(l,0,0.01))}
-    tr<-tr+S*(mean(tr)-tr)+psi*(theta-tr)+rnorm(length(tr),0,delta)
-    tr[which(1>tr)]<-1
-    tr[which(tr>8)]<-8
+    tr<-tr-S*(mean(tr)-tr)+psi*(theta-tr)+rnorm(length(tr),0,delta)
   }
   return(tr)
 }
 
-#Run a bootstrap with simulated data under BM+OU model to calculate the null expectation of likelihood ratios of two models
-# Null: BM+OU Alternative: BM+OU+Interactions
-dataset1<-fastBM(tree,a=mean(Data1),mu=mean(Data1),sig2=runif(1,0,5),bounds=c(1,8),nsim=500)
-A<-mean(Data1)
-Like<-c()
-pb<-txtProgressBar(min =1, max =500, style = 3)
+#Design a ABC model to estimate the model paramter fitting the observed data
 
+#Input phylogenetic tree and trait data for extant species
+tree<-pbtree(b=1,d=0,n=20)
+Data<-rnorm(20,0,3)
 
-  
-  Sys.sleep(0.01)
-  # update progress bar
-  setTxtProgressBar(pb, k)
-
-
-# ABC model
 
 #Draw values for the parameters to know from their prior distributions
 #Set up a rejection threshold for euclidean distance
 #Model: tr.change=tr+S*(mean(tr)-tr)+psi*(theta-tr)+rnorm(length(tr),0,delta)
 #Parameters and their priors
-# Ancestral trait  ancestor: fixed
+# Ancestral trait  ancestor: dunif(1,8)
 # Coefficient for interaction term  S:dunif(0,5)
 # Coefficient for stabilizing selection  psi: dlnorm(0,4)
-# Selection optima 1  theta: fixed
+# Selection optima 1  theta: dunif(1,8)
 # drift sd per time  delta: dunif(0,5)
 
-
-Data<-dat1[2,]
-
 final<-vector(length=6)
+pb<-txtProgressBar(min =1, max =10000, style = 3)
 for(i in 1:10000){
-  pars<-c(c(0,runif(1,0,5),rnorm(1,0,0.5),runif(1,0,1)))
+  Sys.sleep(0.05)
+  # update progress bar
+  setTxtProgressBar(pb, i)
+  pars<-c(c(runif(1,1,8),runif(1,0,5),runif(1,0,4),rnorm(1,0,8),runif(1,0,10)))
   res<-evol(pars,br)
-  stat<-sqrt(sum((Data-res)^2))
-  final<-rbind(final,c(pars,stat))
+  
+  #Calculate summary statistics
+  stat1<-sqrt(sum((Data-res)^2))  # Simple euclidean distance between trait vectors
+  #stat.sp1<-spectR_t(tree,Data)$splitter-spectR_t(tree,res)$splitter # characterstic (splitter)of spectral density plot of a tree and trait data
+  #stat.sp2<-spectR_t(tree,Data)$tracer-spectR_t(tree,res)$tracer   #characterstic (tracer)of spectral density plot of a tree and trait data
+  #stat.sp3<-spectR_t(tree,Data)$fragmenter-spectR_t(tree,res)$fragmenter #characterstic (fragmenter)of spectral density plot of a tree and trait data
+  if(stat1<25) {final<-rbind(final,c(pars,stat1))}
+  #final<-rbind(final,c(pars,stat1,stat.sp1,statsp2,statsp3))
 }
 
-final<-final[-1,]
-H1_post<-order(final[,6])[1:500]
-H1Post<-matrix(ncol=2,nrow=500)
-H1Post[,1]<-final[,2][H1_post]  #S
-H1Post[,2]<-final[,3][H1_post]  #Stabilizing selection coeff
-H1Post[,3]<-final[,5][H1_post]  #Drift variance
+final1<-final[-1,]
+final1<-final1[,1:5]
+
+#Second filtering
+#create sets of parameter values based on first filtering
+#Deviate param values using rnorm function
+final2<-vector(length=5)
+for(i in 1:length(final1)){
+  for(j in 1:5){
+   final2<-rbind(final2,rnorm(5,final1[i,],0.05*final1[i,])) 
+  }
+}
+
+#Sequential filtering
+final.second<-final2
 
 
-k   = kde(H1Post, xmin=c(0,min(H1Post[,2]),0), xmax=c(max(H1Post[,1]),max(H1Post[,2]),max(H1Post[,3])))
-k0  = kde(H1Post, xmin=c(0,min(H1Post[,2]),0), xmax=c(0,max(H1Post[,2]),max(H1Post[,3])))       
-
-# Use kernel smoothing to estimate likelihood maxima with and without competition.
-k_max_index     = which(k$estimate == max(k$estimate), arr.ind = TRUE)
-H1_lik          = k$estimate[k_max_index[1], k_max_index[2],k_max_index[3]]
-
-k0_max_index    = which(k0$estimate == max(k0$estimate), arr.ind = TRUE)
-H0_lik          = k0$estimate[k0_max_index[1], k0_max_index[2],k0_max_index[3]]
-
-LRT             = -2 * log( H0_lik / H1_lik )
-
-Like<-c(Like,LRT)
-
-
-
-
-
-
-
+final.third<-vector(length=6)
+pb<-txtProgressBar(min = 1, nrow(final.second), style = 3)
+for(i in 1:nrow(final.second)){
+  Sys.sleep(0.1)
+  # update progress bar
+  setTxtProgressBar(pb, i)
+  pars<-c(final.second[i,])
+  res<-evol(pars,br)
+  stat<-sqrt(sum((Data-res)^2))
+  if(stat<10){final.third<-rbind(final.third,c(pars,stat))}
+}
 
 
 #Plot overlap of priors and posteriors
@@ -137,33 +124,41 @@ post.A$type<-"Posterior for Ancestral trait"
 A.dat<-rbind(prior.A,post.A)
 ggplot(A.dat,aes(points,fill=type))+geom_density(alpha=0.2)+xlim(0,10)
 
-priorS<-data.frame(points=rlnorm(1000,0,2))
+priorS<-data.frame(points=runif(100000,0,5))
 postS<-data.frame(points=final.third[,2])  
 priorS$type<-"prior for S"
 postS$type<-"Posterior for S"
 Sdat<-rbind(priorS,postS)
-ggplot(Sdat,aes(points,fill=type))+geom_density(alpha=0.2)+xlim(0,20)
+tiff('AnolS.tiff', units="in", width=5, height=5, res=300)
 
-prior.psi<-data.frame(points=rlnorm(1000,0,2))
+ggplot(Sdat,aes(points,fill=type))+geom_density(alpha=0.2)+xlim(0,20)
+dev.off()
+
+prior.psi<-data.frame(points=runif(1000,0,4))
 post.psi<-data.frame(points=final.third[,3])
-prior.psi$type<-"prior for psi"
-post.psi$type<-"Posterior for psi"
+prior.psi$type<-"Prior for delta"
+post.psi$type<-"Posterior for delta"
 psidat<-rbind(prior.psi,post.psi)
+tiff('Anoldelta.tiff', units="in", width=5, height=5, res=300)
+
 ggplot(psidat,aes(points,fill=type))+geom_density(alpha=0.2)+xlim(0,20)
+dev.off()
 
 prior.delta<-data.frame(points=runif(1000,0,10))
 post.delta<-data.frame(points=final.third[,5])  
-prior.delta$type<-"prior for delta"
-post.delta$type<-"Posterior for delta"
+prior.delta$type<-"Prior for sigma"
+post.delta$type<-"Posterior for sigma"
 delta.dat<-rbind(prior.delta,post.delta)
-ggplot(delta.dat,aes(points,fill=type))+geom_density(alpha=0.2)
+tiff('Anolsigma.tiff', units="in", width=5, height=5, res=300)
 
+ggplot(delta.dat,aes(points,fill=type))+geom_density(alpha=0.2)
+dev.off()
 prior.theta<-data.frame(points=runif(1000,0,8))
 post.theta<-data.frame(points=final.third[,4])  
 prior.theta$type<-"prior for theta"
 post.theta$type<-"Posterior for theta"
 theta.dat<-rbind(prior.theta,post.theta)
-ggplot(theta.dat,aes(points,fill=type))+geom_density(alpha=0.2)
+ggplot(theta.dat,aes(points,fill=type))+geom_density(alpha=0.2)+ xlim(1,8)
 
 ggplot(postS,aes(points,fill=type))+geom_density()+xlim(0,2)
 ggplot(post.psi,aes(points,fill=type))+geom_density()+xlim(0,2)
@@ -191,49 +186,96 @@ simdat<-evol(means,br)
 simdat1<-sort(simdat,decreasing = F)
 Data1<-sort(Data,decreasing = F)
 result<-data.frame(Data=Data1,Simulation=simdat1)
-ggplot(result,aes(x=Data,y=Simulation))+geom_point(size=2)+geom_abline(slope=1,intercept = 0,color="red")+geom_smooth(method="lm")
+ggplot(result,aes(x=Data,y=Simulation))+geom_point(size=2)+geom_smooth(method="lm")
 
 
 
+final.third<-final.third[-1,]
 
-###Alternative model of trait evolution
-#For the interaction component, trait change is linearly proportional to  trait matching function with thresholds
-#Inputs: z= vector of all trait values, S=coefficient of rate change
-traitevol<-function(z,omega,S){
-  zdash<-c()
-  for(i in 1:length(z)){
-    x<-z-z[i]
-    x[which(abs(x)>=5)]<-0
-    y<-S*sum(-sign(x)*exp(-abs(x)/omega))
-    zdash<-c(zdash,z[i]+y)
+final1<-final.third
+
+final1<-final[-1,]
+H1_post<-order(final1[,6])[1:500]
+H1Post<-matrix(ncol=3,nrow=500)
+H1Post[,1]<-final[,2][H1_post]  #S
+H1Post[,2]<-final[,3][H1_post]  #Stabilizing selection coeff
+H1Post[,3]<-final[,5][H1_post]  #Drift variance
+MLE<-H1Post[1,]
+
+#Draw values for the parameters to know from their prior distributions
+#Set up a rejection threshold for euclidean distance
+#Model: tr.change=tr+S*(mean(tr)-tr)+psi*(theta-tr)+rnorm(length(tr),0,delta)
+#Parameters and their priors
+# Ancestral trait  ancestor: dunif(1,8)
+# Coefficient for interaction term  S:dunif(0,5)
+# Coefficient for stabilizing selection  psi: dlnorm(0,4)
+# Selection optima 1  theta: dunif(1,8)
+# drift sd per time  delta: dunif(0,5)
+
+
+k   = kde(H1Post, xmin=c(0,min(H1Post[,2]),0), xmax=c(max(H1Post[,1]),max(H1Post[,2]),max(H1Post[,3])))
+k0  = kde(H1Post, xmin=c(0,min(H1Post[,2]),0), xmax=c(0,max(H1Post[,2]),max(H1Post[,3])))       
+
+
+# Use kernel smoothing to estimate likelihood maxima with and without competition.
+k_max_index     = which(k$estimate == max(k$estimate), arr.ind = TRUE)
+H1_lik          = k$estimate[k_max_index[1], k_max_index[2],k_max_index[3]]
+
+k0_max_index    = which(k0$estimate == max(k0$estimate), arr.ind = TRUE)
+H0_lik          = k0$estimate[k0_max_index[1], k0_max_index[2],k0_max_index[3]]
+
+LRT             = -2 * log( H0_lik / H1_lik )
+
+
+#bootstrap for estimated parameter values
+
+
+#Simulate datasets
+Dataset<-matrix(ncol=2,nrow=100)
+MLE<-matrix(ncol=3,nrow=500)
+pb<-txtProgressBar(min = 1, 250, style = 3)
+for(m in 1:250){
+  Sys.sleep(0.1)
+  # update progress bar
+  setTxtProgressBar(pb, m)
+  #Simulate data
+ 
+  
+ 
+  dat<-evol_non(c(0.05,0.05,a),br)
+  #Run a likelihood test
+  final<-vector(length=6)
+  for(n in 1:5000){
+    pars<-c(0,runif(1,0,5),rnorm(1,0,0.5),0,runif(1,0,1))
+    res<-evol(pars,br)
+    stat<-sqrt(sum((dat-res)^2))
+    final<-rbind(final,c(pars,stat))
   }
-  return(zdash)
+  final<-final[-1,]
+  H1_post<-order(final[,6])[1:500]
+  H1Post<-matrix(ncol=3,nrow=500)
+  H1Post[,1]<-final[,2][H1_post]  #S
+  H1Post[,2]<-final[,3][H1_post]  #Stabilizing selection coeff
+  H1Post[,3]<-final[,5][H1_post]  #Drift variance
+  MLE[m,]<-H1Post[1,]
+  
+  k   = kde(H1Post, xmin=c(0,min(H1Post[,2]),0), xmax=c(max(H1Post[,1]),max(H1Post[,2]),max(H1Post[,3])))
+  k0  = kde(H1Post, xmin=c(0,min(H1Post[,2]),0), xmax=c(0,max(H1Post[,2]),max(H1Post[,3])))       
+  
+  # Use kernel smoothing to estimate likelihood maxima with and without competition.
+  k_max_index     = which(k$estimate == max(k$estimate), arr.ind = TRUE)
+  H1_lik          = k$estimate[k_max_index[1], k_max_index[2],k_max_index[3]]
+  
+  k0_max_index    = which(k0$estimate == max(k0$estimate), arr.ind = TRUE)
+  H0_lik          = k0$estimate[k0_max_index[1], k0_max_index[2],k0_max_index[3]]
+  
+  LRT             = -2 * log( H0_lik / H1_lik )
+  
+  Dataset20[m,]<-c(a,dat,LRT)
 }
 
 
-traitevol2<-function(z,S){
-  zdash<-z-S*(mean(z)-z)
-  return(zdash)
-}
 
 
-#Simulate the process over multiple time steps
-n<-20
-traits<-rnorm(n,0,4)
-primer<-traits
-newdat<-traits
-for(i in 1:10000){
-  newdat<-traitevol(newdat,1,0.05)
-  traits<-rbind(traits,newdat)
-}
 
-plot(traits[,1],type="l",ylim=c(min(traits),max(traits)),xlab="time",ylab="Traits")
-for(i in 2:n){
-  lines(traits[,i],col=i)
-}
 
-means<-apply(traits,1,mean)
-plot(means,ylab="grand mean")
-
-variance<-apply(traits,1,var)
-plot(variance,ylab="grand variance")
